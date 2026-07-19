@@ -70,6 +70,18 @@ pub struct QemuShape {
     pub devices: Vec<String>,
     #[serde(default)]
     pub fw_cfg: Vec<String>,
+    /// Full `-smp` topology string, e.g. "124,sockets=2,cores=62,threads=1".
+    /// When absent, falls back to "{cpus},maxcpus={cpus}".
+    #[serde(default)]
+    pub smp: Option<String>,
+    /// `-numa` arguments (one entry per flag), e.g.
+    /// "node,nodeid=0,memdev=mem-node0" / "cpu,node-id=0,socket-id=0".
+    #[serde(default)]
+    pub numa: Vec<String>,
+    /// `-smbios` arguments (one entry per flag), e.g.
+    /// "type=1,manufacturer=Chutes,product=TDX-VM,...".
+    #[serde(default)]
+    pub smbios: Vec<String>,
 }
 
 fn default_cpu() -> String { "host".to_string() }

@@ -370,7 +370,10 @@ fn build_qemu_args(qemu: Option<&QemuShape>, cpus: u8, memory: &str) -> Vec<OsSt
         Some(q) => {
             push(&mut args, "-accel",     &q.accel);
             push(&mut args, "-m",         memory);
-            push(&mut args, "-smp",       &format!("{cpus},maxcpus={cpus}"));
+            match &q.smp {
+                Some(smp) => push(&mut args, "-smp", smp),
+                None => push(&mut args, "-smp", &format!("{cpus},maxcpus={cpus}")),
+            }
             push(&mut args, "-cpu",       &q.cpu);
             args.push("-no-reboot".into());
             args.push("-nodefaults".into());
@@ -378,8 +381,11 @@ fn build_qemu_args(qemu: Option<&QemuShape>, cpus: u8, memory: &str) -> Vec<OsSt
             args.push("-nographic".into());
             push(&mut args, "-bios",      OVMF_IN_CONTAINER);
             push(&mut args, "-machine",   &q.machine);
+            for v in &q.smbios  { push(&mut args, "-smbios", v); }
             for v in &q.globals { push(&mut args, "-global", v); }
             for v in &q.objects { push(&mut args, "-object", v); }
+            // -numa must follow the memory-backend -object entries it references.
+            for v in &q.numa    { push(&mut args, "-numa", v); }
             for v in &q.netdevs { push(&mut args, "-netdev", v); }
             for v in &q.devices { push(&mut args, "-device", v); }
             for v in &q.fw_cfg  { push(&mut args, "-fw_cfg", v); }
