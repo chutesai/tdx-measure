@@ -79,9 +79,14 @@ pub struct QemuShape {
     #[serde(default)]
     pub numa: Vec<String>,
     /// `-smbios` arguments (one entry per flag), e.g.
-    /// "type=1,manufacturer=Chutes,product=TDX-VM,...".
+    /// "type=1,manufacturer=Acme,product=VM,...".
     #[serde(default)]
     pub smbios: Vec<String>,
+    /// `-serial` arguments (one entry per flag), e.g. "null" / "stdio" /
+    /// "file:/path". Empty = no serial port. A serial adds an ISA COM1 node to
+    /// the DSDT, so a reference launch with a serial must declare one here.
+    #[serde(default)]
+    pub serial: Vec<String>,
 }
 
 fn default_cpu() -> String { "host".to_string() }

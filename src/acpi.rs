@@ -16,6 +16,7 @@ use crate::util::read_file_data;
 use crate::{ImageConfig, Machine, QemuShape};
 
 const DOCKERFILE_QEMU_ACPI_DUMP: &str = include_str!("../Dockerfile.qemu-acpi-dump");
+const PCI_BAR_STUB_C: &str = include_str!("../pci-bar-stub.c");
 const CONTAINER_NAME: &str = "acpi-tables-generator";
 const IMAGE_NAME: &str = "acpi-tables-generator";
 const OVMF_IN_CONTAINER: &str = "/usr/share/ovmf/OVMF.fd";
@@ -379,6 +380,10 @@ fn build_qemu_args(qemu: Option<&QemuShape>, cpus: u8, memory: &str) -> Vec<OsSt
             args.push("-nodefaults".into());
             push(&mut args, "-vga",       "none");
             args.push("-nographic".into());
+            // A serial attaches an ISA COM1 (PNP0501) node to the DSDT, so a
+            // reference launch that has one must declare it here to match; the
+            // backend is ACPI-irrelevant (COM1's AML is fixed at io 0x3f8).
+            for v in &q.serial { push(&mut args, "-serial", v); }
             push(&mut args, "-bios",      OVMF_IN_CONTAINER);
             push(&mut args, "-machine",   &q.machine);
             for v in &q.smbios  { push(&mut args, "-smbios", v); }
@@ -564,6 +569,7 @@ pub fn generate_acpi_tables(
         build_ctx.path().join("Dockerfile.qemu-acpi-dump"),
         DOCKERFILE_QEMU_ACPI_DUMP,
     )?;
+    fs_err::write(build_ctx.path().join("pci-bar-stub.c"), PCI_BAR_STUB_C)?;
     build_docker_image(build_ctx.path(), distribution, &pkg, acpi_tables_name)?;
 
     // Bind-mounted output dir must be writable by the container's non-root `qemu-user`.
@@ -871,6 +877,10 @@ mod tests {
                 "virtio-rng-pci".into(),
             ],
             fw_cfg: vec!["name=opt/ovmf/X-PciMmio64Mb,string=262144".into()],
+            smp: None,
+            numa: vec![],
+            smbios: vec![],
+            serial: vec![],
         };
         let args = build_qemu_args(Some(&shape), 8, "16384M")
             .into_iter()
