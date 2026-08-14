@@ -35,6 +35,12 @@ pub struct TdxMeasurements {
     #[serde(with = "hex_bytes")]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rtmr2: Vec<u8>,
+    /// Ordered per-event SHA-384 digests (hex) that fold into RTMR0. Emitted so
+    /// callers can splice per-topology events into a captured baseline CCEL for
+    /// offline RTMR0 generation. Empty for runtime-only measurements.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rtmr0_log: Vec<String>,
 }
 
 /// Common boot configuration (platform-specific)

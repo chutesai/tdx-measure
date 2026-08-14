@@ -260,7 +260,11 @@ impl<'a> Tdvf<'a> {
         Ok(h.finalize().to_vec())
     }
 
-    pub fn rtmr0(&self, machine: &Machine) -> Result<Vec<u8>> {
+    /// Returns (folded RTMR0, per-event digest log). The log is the ordered list
+    /// of SHA-384 event digests that fold into RTMR0 — exposed so callers can
+    /// splice per-topology events into a captured baseline CCEL (offline RTMR0
+    /// generation) without re-deriving them.
+    pub fn rtmr0(&self, machine: &Machine) -> Result<(Vec<u8>, Vec<Vec<u8>>)> {
         // Calculate measurement of the TD Hand-Off Block (TD-HOB)
         let td_hob_hash = self.measure_td_hob(machine.memory_size)?;
 
@@ -311,7 +315,7 @@ impl<'a> Tdvf<'a> {
         }
 
         debug_print_log("RTMR0", &rtmr0_log);
-        Ok(measure_log(&rtmr0_log))
+        Ok((measure_log(&rtmr0_log), rtmr0_log))
     }
 
     fn measure_td_hob(&self, memory_size: u64) -> Result<Vec<u8>> {
