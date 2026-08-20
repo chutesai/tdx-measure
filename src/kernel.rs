@@ -105,10 +105,13 @@ pub(crate) fn measure_rtmr1_direct(
     let initrd_data = fs::read(initrd_path).context("Failed to read initrd file")?;
     let initrd_size = initrd_data.len() as u32;
 
-    // Patch kernel to mimic QEMU's behavior
-    let kd = patch_kernel(&kernel_data, initrd_size, mem_size, acpi_data_size)
+    // OVMF measures the RAW kernel PE image into RTMR1 (EV_EFI_BOOT_SERVICES_-
+    // APPLICATION). The setup-header patch QEMU/OVMF applies happens AFTER the
+    // measurement, so hashing a patched kernel diverges from the real RTMR1.
+    let _kd = patch_kernel(&kernel_data, initrd_size, mem_size, acpi_data_size)
         .context("Failed to patch kernel")?;
-    let kernel_hash = authenticode_sha384_hash(&kd).context("Failed to compute kernel hash")?;
+    let kernel_hash =
+        authenticode_sha384_hash(&kernel_data).context("Failed to compute kernel hash")?;
 
     // Compute RTMR1 log
     let rtmr1_log = vec![
@@ -132,8 +135,9 @@ pub(crate) fn measure_rtmr2_direct(
     // Reads our initrd file
     let initrd_data = fs::read(initrd_path).context("Failed to read initrd file")?;
 
-    // OVFM adds initrd to the command line
-    let cmdline = kernel_cmdline.to_string() + " initrd=initrd";
+    // OVMF PREPENDS "initrd=initrd " to the command line (see /proc/cmdline); the
+    // Linux EFI stub measures that full LoadOptions string into RTMR2.
+    let cmdline = "initrd=initrd ".to_string() + kernel_cmdline;
 
     // Compute RTMR2 log
     let rtmr2_log = vec![

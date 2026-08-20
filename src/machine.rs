@@ -44,7 +44,7 @@ impl Machine<'_> {
         let fw_data = fs::read(self.firmware)?;
         let tdvf = Tdvf::parse(&fw_data).context("Failed to parse TDVF metadata")?;
         let mrtd = tdvf.mrtd().context("Failed to compute MR TD")?;
-        let rtmr0 = tdvf.rtmr0(self).context("Failed to compute RTMR0")?;
+        let (rtmr0, rtmr0_log) = tdvf.rtmr0(self).context("Failed to compute RTMR0")?;
 
         let rtmr1;
         let rtmr2;
@@ -72,6 +72,7 @@ impl Machine<'_> {
             rtmr0,
             rtmr1,
             rtmr2,
+            rtmr0_log: rtmr0_log.iter().map(hex::encode).collect(),
         })
     }
 
@@ -79,13 +80,14 @@ impl Machine<'_> {
         let fw_data = fs::read(self.firmware)?;
         let tdvf = Tdvf::parse(&fw_data).context("Failed to parse TDVF metadata")?;
         let mrtd = tdvf.mrtd().context("Failed to compute MR TD")?;
-        let rtmr0 = tdvf.rtmr0(self).context("Failed to compute RTMR0")?;
+        let (rtmr0, rtmr0_log) = tdvf.rtmr0(self).context("Failed to compute RTMR0")?;
 
         Ok(TdxMeasurements {
             mrtd,
             rtmr0,
             rtmr1: vec![],
             rtmr2: vec![],
+            rtmr0_log: rtmr0_log.iter().map(hex::encode).collect(),
         })
     }
 
@@ -117,6 +119,7 @@ impl Machine<'_> {
             rtmr0: vec![],
             rtmr1,
             rtmr2,
+            rtmr0_log: vec![],
         })
     }
 }

@@ -17,6 +17,7 @@ mod kernel;
 mod image;
 mod machine;
 mod num;
+mod smbios;
 mod tdvf;
 mod util;
 
@@ -35,6 +36,12 @@ pub struct TdxMeasurements {
     #[serde(with = "hex_bytes")]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rtmr2: Vec<u8>,
+    /// Ordered per-event SHA-384 digests (hex) that fold into RTMR0. Emitted so
+    /// callers can splice per-topology events into a captured baseline CCEL for
+    /// offline RTMR0 generation. Empty for runtime-only measurements.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rtmr0_log: Vec<String>,
 }
 
 /// Common boot configuration (platform-specific)
@@ -70,6 +77,30 @@ pub struct QemuShape {
     pub devices: Vec<String>,
     #[serde(default)]
     pub fw_cfg: Vec<String>,
+    /// Full `-smp` topology string, e.g. "124,sockets=2,cores=62,threads=1".
+    /// When absent, falls back to "{cpus},maxcpus={cpus}".
+    #[serde(default)]
+    pub smp: Option<String>,
+    /// `-numa` arguments (one entry per flag), e.g.
+    /// "node,nodeid=0,memdev=mem-node0" / "cpu,node-id=0,socket-id=0".
+    #[serde(default)]
+    pub numa: Vec<String>,
+    /// `-smbios` arguments (one entry per flag), e.g.
+    /// "type=1,manufacturer=Acme,product=VM,...".
+    #[serde(default)]
+    pub smbios: Vec<String>,
+    /// `-serial` arguments (one entry per flag), e.g. "null" / "stdio" /
+    /// "file:/path". Empty = no serial port. A serial adds an ISA COM1 node to
+    /// the DSDT, so a reference launch with a serial must declare one here.
+    #[serde(default)]
+    pub serial: Vec<String>,
+    /// Optional SMBIOS Type-4 Processor ID (8 bytes, hex) to patch into the dumped
+    /// SMBIOS before measuring RTMR0 #14. This is CPUID leaf-1 (EAX|EDX) of the
+    /// PRODUCTION CPU; under KVM the generating host's CPUID leaks in and cannot be
+    /// overridden, so measurement generation pins it from the profile instead. When
+    /// absent, whatever the generating QEMU produced is used unchanged.
+    #[serde(default)]
+    pub processor_id: Option<String>,
 }
 
 fn default_cpu() -> String { "host".to_string() }

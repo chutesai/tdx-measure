@@ -16,6 +16,7 @@ use crate::util::read_file_data;
 use crate::{ImageConfig, Machine, QemuShape};
 
 const DOCKERFILE_QEMU_ACPI_DUMP: &str = include_str!("../Dockerfile.qemu-acpi-dump");
+const PCI_BAR_STUB_C: &str = include_str!("../pci-bar-stub.c");
 const CONTAINER_NAME: &str = "acpi-tables-generator";
 const IMAGE_NAME: &str = "acpi-tables-generator";
 const OVMF_IN_CONTAINER: &str = "/usr/share/ovmf/OVMF.fd";
@@ -27,6 +28,13 @@ pub struct Tables {
     pub tables: Vec<u8>,
     pub rsdp: Vec<u8>,
     pub loader: Vec<u8>,
+    /// QEMU SMBIOS structure table (dumped by the patched QEMU), for RTMR0 #14.
+    /// Empty when not generated (indirect boot / no create_acpi_table).
+    pub smbios: Vec<u8>,
+    /// `etc/extra-pci-roots` fw_cfg blob (8-byte LE count of extra PCI roots), RTMR0 #2.
+    pub extra_pci_roots: Vec<u8>,
+    /// `bootorder` fw_cfg blob, RTMR0 #4.
+    pub bootorder: Vec<u8>,
 }
 
 impl Machine<'_> {
@@ -58,10 +66,30 @@ impl Machine<'_> {
             derive_table_loader(&tables)?
         };
 
+        // Direct-boot RTMR0 also folds SMBIOS (#14) and two fw_cfg blobs (#2/#4).
+        // generate_acpi_tables writes these next to the acpi_tables file; read them
+        // best-effort (empty when absent, e.g. indirect boot).
+        let (smbios, extra_pci_roots, bootorder) = {
+            let dir = std::path::Path::new(self.acpi_tables).parent();
+            let read_sibling = |name: &str| -> Vec<u8> {
+                dir.map(|d| d.join(name))
+                    .and_then(|p| fs_err::read(p).ok())
+                    .unwrap_or_default()
+            };
+            (
+                read_sibling("smbios-tables"),
+                read_sibling("extra-pci-roots"),
+                read_sibling("bootorder"),
+            )
+        };
+
         Ok(Tables {
             tables,
             rsdp,
             loader,
+            smbios,
+            extra_pci_roots,
+            bootorder,
         })
     }
 }
@@ -337,9 +365,15 @@ fn qemu_pkg_for<'a>(distribution: &str, version_override: Option<&'a str>) -> Re
             "1:9.2.1+ds-1ubuntu4+tdx2.0~ppa2",
             "sha256:27771fb7b40a58237c98e8d3e6b9ecdd9289cec69a857fccfb85ff36294dac20",
         ),
+        // Pinned to the QEMU package the production fleet actually BOOTS
+        // (`qemu-system-x86_64` on the TDX hosts), not the newest main-archive
+        // upload. The package revision changes QEMU's generated ACPI tables, which
+        // fold into RTMR0 — so the ACPI-dump container must build the exact package
+        // the launcher runs or measurements drift. Bump this only in lockstep with a
+        // fleet-wide QEMU roll, and regenerate measurements when it moves.
         "ubuntu:26.04" => (
             "main",
-            "1:10.2.1+ds-1ubuntu4",
+            "1:10.2.1+ds-1ubuntu3.1",
             "sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64",
         ),
         other => bail!(
@@ -370,16 +404,26 @@ fn build_qemu_args(qemu: Option<&QemuShape>, cpus: u8, memory: &str) -> Vec<OsSt
         Some(q) => {
             push(&mut args, "-accel",     &q.accel);
             push(&mut args, "-m",         memory);
-            push(&mut args, "-smp",       &format!("{cpus},maxcpus={cpus}"));
+            match &q.smp {
+                Some(smp) => push(&mut args, "-smp", smp),
+                None => push(&mut args, "-smp", &format!("{cpus},maxcpus={cpus}")),
+            }
             push(&mut args, "-cpu",       &q.cpu);
             args.push("-no-reboot".into());
             args.push("-nodefaults".into());
             push(&mut args, "-vga",       "none");
             args.push("-nographic".into());
+            // A serial attaches an ISA COM1 (PNP0501) node to the DSDT, so a
+            // reference launch that has one must declare it here to match; the
+            // backend is ACPI-irrelevant (COM1's AML is fixed at io 0x3f8).
+            for v in &q.serial { push(&mut args, "-serial", v); }
             push(&mut args, "-bios",      OVMF_IN_CONTAINER);
             push(&mut args, "-machine",   &q.machine);
+            for v in &q.smbios  { push(&mut args, "-smbios", v); }
             for v in &q.globals { push(&mut args, "-global", v); }
             for v in &q.objects { push(&mut args, "-object", v); }
+            // -numa must follow the memory-backend -object entries it references.
+            for v in &q.numa    { push(&mut args, "-numa", v); }
             for v in &q.netdevs { push(&mut args, "-netdev", v); }
             for v in &q.devices { push(&mut args, "-device", v); }
             for v in &q.fw_cfg  { push(&mut args, "-fw_cfg", v); }
@@ -558,6 +602,7 @@ pub fn generate_acpi_tables(
         build_ctx.path().join("Dockerfile.qemu-acpi-dump"),
         DOCKERFILE_QEMU_ACPI_DUMP,
     )?;
+    fs_err::write(build_ctx.path().join("pci-bar-stub.c"), PCI_BAR_STUB_C)?;
     build_docker_image(build_ctx.path(), distribution, &pkg, acpi_tables_name)?;
 
     // Bind-mounted output dir must be writable by the container's non-root `qemu-user`.
@@ -584,6 +629,47 @@ pub fn generate_acpi_tables(
     fs_err::copy(&produced, &acpi_tables_target)?;
     fs_err::set_permissions(&acpi_tables_target, std::fs::Permissions::from_mode(0o644))?;
     info!("ACPI tables written to: {}", acpi_tables_target.display());
+
+    // SMBIOS structure table (dumped by the patched QEMU) → sibling of acpi_tables,
+    // for RTMR0 #14. build_tables reads it from there.
+    let smbios_produced = output_dir.path().join("smbios-tables");
+    if smbios_produced.exists() {
+        let mut smbios = fs_err::read(&smbios_produced)?;
+        // Pin the Type-4 Processor ID to the production CPUID leaf-1 when provided —
+        // under KVM the generating host's CPUID (ds/ss, pse36) leaks into the dumped
+        // SMBIOS and can't be overridden via -cpu flags.
+        if let Some(pid_hex) = boot_config.qemu.as_ref().and_then(|q| q.processor_id.as_ref()) {
+            let pid: [u8; 8] = hex::decode(pid_hex)
+                .context("qemu.processor_id must be hex")?
+                .as_slice()
+                .try_into()
+                .context("qemu.processor_id must decode to 8 bytes")?;
+            crate::smbios::patch_type4_processor_id(&mut smbios, &pid);
+        }
+        let dst = acpi_tables_dir.join("smbios-tables");
+        fs_err::write(&dst, &smbios)?;
+        fs_err::set_permissions(&dst, std::fs::Permissions::from_mode(0o644))?;
+        info!("SMBIOS tables written to: {}", dst.display());
+    } else {
+        bail!("smbios-tables not found in container output (patch may have failed)");
+    }
+
+    // The two fw_cfg blobs that fold into RTMR0 are derived from the machine shape
+    // (not dumped from QEMU): #2 etc/extra-pci-roots = 8-byte LE count of pxb-pcie
+    // root buses; #4 bootorder = the fixed direct-boot linuxboot option-rom entry.
+    let extra_pci_roots: u64 = boot_config
+        .qemu
+        .as_ref()
+        .map(|q| q.devices.iter().filter(|d| d.contains("pxb-pcie")).count() as u64)
+        .unwrap_or(0);
+    fs_err::write(
+        acpi_tables_dir.join("extra-pci-roots"),
+        extra_pci_roots.to_le_bytes(),
+    )?;
+    fs_err::write(
+        acpi_tables_dir.join("bootorder"),
+        b"/rom@genroms/linuxboot_dma.bin\0".as_slice(),
+    )?;
 
     Ok(())
 }
@@ -809,7 +895,7 @@ mod tests {
 
         let p = qemu_pkg_for("ubuntu:26.04", None).unwrap();
         assert_eq!(p.source, "main");
-        assert_eq!(p.version, "1:10.2.1+ds-1ubuntu4");
+        assert_eq!(p.version, "1:10.2.1+ds-1ubuntu3.1");
         assert!(p.image_digest.starts_with("sha256:"));
         assert_eq!(p.image_digest.len(), "sha256:".len() + 64);
     }
@@ -865,6 +951,11 @@ mod tests {
                 "virtio-rng-pci".into(),
             ],
             fw_cfg: vec!["name=opt/ovmf/X-PciMmio64Mb,string=262144".into()],
+            smp: None,
+            numa: vec![],
+            smbios: vec![],
+            serial: vec![],
+            processor_id: None,
         };
         let args = build_qemu_args(Some(&shape), 8, "16384M")
             .into_iter()

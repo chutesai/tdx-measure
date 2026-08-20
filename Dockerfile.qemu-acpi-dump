@@ -40,12 +40,18 @@ RUN QEMU_WRK_DIR=$(find / -maxdepth 1 -type d -name "qemu*" | head -n 1) && \
     useradd -m -s /sbin/nologin qemu-user && \
     chown -R qemu-user:qemu-user "$QEMU_WRK_DIR"
 
+# Add the pci-bar-stub device to the QEMU tree and register it unconditionally in
+# the system emulator, so ACPI generation can reproduce a device's MMIO windows
+# from a declared BAR layout without the real hardware present.
+COPY pci-bar-stub.c /qemu-source/hw/misc/pci-bar-stub.c
+RUN printf "\nsystem_ss.add(files('pci-bar-stub.c'))\n" >> /qemu-source/hw/misc/meson.build
+
 WORKDIR /qemu-source
 
 USER qemu-user
 
 # Patch QEMU source to dump ACPI tables: inject code to write ACPI tables to /output/, force EOI intercept to 1, and skip pc-bios/tests builds
-ARG acpi_tables_dump_loc='\n\n    int fd = open("\/output\/'"${ACPI_TABLES_NAME}"'", O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);\n    if(fd != -1) {\n        int ret = write(fd, (uint8_t *)tables.table_data->data, tables.table_data->len);\n        if (ret < tables.table_data->len) {\n            printf("Error: Failed to write the acpi tables\\n");\n        } else {\n            printf("Successfully wrote the acpi tables to the file \\"'"${ACPI_TABLES_NAME}"'\\"\\n");\n        }\n    } else {\n        printf("Error: Failed to create acpi_tables file.\\n");\n    }\n    exit(0);'
+ARG acpi_tables_dump_loc='\n\n    int fd = open("\/output\/'"${ACPI_TABLES_NAME}"'", O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);\n    if(fd != -1) {\n        int ret = write(fd, (uint8_t *)tables.table_data->data, tables.table_data->len);\n        if (ret < tables.table_data->len) {\n            printf("Error: Failed to write the acpi tables\\n");\n        } else {\n            printf("Successfully wrote the acpi tables to the file \\"'"${ACPI_TABLES_NAME}"'\\"\\n");\n        }\n    } else {\n        printf("Error: Failed to create acpi_tables file.\\n");\n    }\n\n    extern uint8_t *smbios_tables;\n    extern size_t smbios_tables_len;\n    int sfd = open("\/output\/smbios-tables", O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);\n    if (sfd != -1 \&\& smbios_tables != NULL) {\n        write(sfd, smbios_tables, smbios_tables_len);\n        printf("Successfully wrote the smbios tables\\n");\n    } else {\n        printf("Error: Failed to dump smbios tables.\\n");\n    }\n    exit(0);'
 ARG acpi_build_c="hw/i386/acpi-build.c"
 ARG acpi_common_c="hw/i386/acpi-common.c"
 ARG meson_build="meson.build"
