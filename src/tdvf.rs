@@ -277,42 +277,74 @@ impl<'a> Tdvf<'a> {
         let acpi_rsdp_hash = measure_sha384(&tables.rsdp);
         let acpi_loader_hash = measure_sha384(&tables.loader);
 
-        // Load boot order data and entries
-        let (boot_order_data, boot_entries) = parse_boot_order(machine)?;
+        // Secure-boot variable events (same in both boot methods).
+        let sb = measure_tdx_efi_variable("8BE4DF61-93CA-11D2-AA0D-00E098032B8C", "SecureBoot", None)?;
+        let pk = measure_tdx_efi_variable("8BE4DF61-93CA-11D2-AA0D-00E098032B8C", "PK", None)?;
+        let kek = measure_tdx_efi_variable("8BE4DF61-93CA-11D2-AA0D-00E098032B8C", "KEK", None)?;
+        let db = measure_tdx_efi_variable("D719B2CB-3D3A-4596-A3BC-DAD00E67656F", "db", None)?;
+        let dbx = measure_tdx_efi_variable("D719B2CB-3D3A-4596-A3BC-DAD00E67656F", "dbx", None)?;
+        let separator = measure_sha384(&[0x00, 0x00, 0x00, 0x00]);
 
-        // Compute RTMR0 log
-        let mut rtmr0_log = vec![
-            td_hob_hash,
-            cfv_hash,
-            measure_tdx_efi_variable("8BE4DF61-93CA-11D2-AA0D-00E098032B8C", "SecureBoot", None)?,
-            measure_tdx_efi_variable("8BE4DF61-93CA-11D2-AA0D-00E098032B8C", "PK", None)?,
-            measure_tdx_efi_variable("8BE4DF61-93CA-11D2-AA0D-00E098032B8C", "KEK", None)?,
-            measure_tdx_efi_variable("D719B2CB-3D3A-4596-A3BC-DAD00E67656F", "db", None)?,
-            measure_tdx_efi_variable("D719B2CB-3D3A-4596-A3BC-DAD00E67656F", "dbx", None)?,
-            measure_sha384(&[0x00, 0x00, 0x00, 0x00]), // Separator
-            acpi_loader_hash,
-            acpi_rsdp_hash,
-            acpi_tables_hash,
-            measure_sha384(&boot_order_data), // Always measure BootOrder itself
-        ];
-
-        if machine.direct_boot {
-            // Boot0000 data for direct boot mode
-            let boot0000_hex = "090100002c0055006900410070007000000004071400c9bdb87cebf8344faaea3ee4af6516a10406140021aa2c4614760345836e8ab6f46623317fff0400";
-            let boot0000 = hex::decode(boot0000_hex).context("Failed to decode boot0000 hex string")?;
-            rtmr0_log.push(measure_sha384(&boot0000));
+        let rtmr0_log = if machine.direct_boot {
+            // Direct boot: the guest's complete 15-event RTMR0 fold, fully offline.
+            // Between the CFV and the secure-boot variables OVMF measures three QEMU
+            // fw_cfg items (#2 etc/extra-pci-roots, #3 BootMenu = fixed 0x0000,
+            // #4 bootorder); after the ACPI events it measures the SMBIOS handoff
+            // (#14 = SHA-384 of the EDK2-filtered SMBIOS table). No BootOrder/Boot0000
+            // — those are not folded into RTMR0 under direct boot.
+            if tables.smbios.is_empty() {
+                bail!(
+                    "direct-boot RTMR0 requires the dumped SMBIOS table; run with \
+                     create_acpi_table so the patched QEMU emits smbios-tables"
+                );
+            }
+            vec![
+                td_hob_hash,                                 // #0
+                cfv_hash,                                    // #1
+                measure_sha384(&tables.extra_pci_roots),     // #2 etc/extra-pci-roots
+                measure_sha384(&[0x00, 0x00]),               // #3 BootMenu (disabled)
+                measure_sha384(&tables.bootorder),           // #4 bootorder
+                sb,                                          // #5
+                pk,                                          // #6
+                kek,                                         // #7
+                db,                                          // #8
+                dbx,                                         // #9
+                separator,                                   // #10
+                acpi_loader_hash,                            // #11 etc/table-loader
+                acpi_rsdp_hash,                              // #12 etc/acpi/rsdp
+                acpi_tables_hash,                            // #13 etc/acpi/tables
+                crate::smbios::measure_smbios(&tables.smbios), // #14 SMBIOS handoff
+            ]
         } else {
+            // Indirect boot (grub/shim): unchanged legacy fold — BootOrder + the
+            // per-entry boot variables + SbatLevel, no fw_cfg/SMBIOS events.
+            let (boot_order_data, boot_entries) = parse_boot_order(machine)?;
+            let mut log = vec![
+                td_hob_hash,
+                cfv_hash,
+                sb,
+                pk,
+                kek,
+                db,
+                dbx,
+                separator,
+                acpi_loader_hash,
+                acpi_rsdp_hash,
+                acpi_tables_hash,
+                measure_sha384(&boot_order_data),
+            ];
             for boot_entry_num in boot_entries {
                 if let Some(boot_data) = load_boot_variable_if_exists(boot_entry_num, machine)? {
-                    rtmr0_log.push(measure_sha384(&boot_data));
+                    log.push(measure_sha384(&boot_data));
                 }
             }
-        }
-
-        // Add SbatLevel if not direct boot
-        if !machine.direct_boot {
-            rtmr0_log.push(measure_tdx_efi_variable("605DAB50-E046-4300-ABB6-3DD810DD8B23", "SbatLevel", Some(b"sbat,1,2021030218\n"))?);
-        }
+            log.push(measure_tdx_efi_variable(
+                "605DAB50-E046-4300-ABB6-3DD810DD8B23",
+                "SbatLevel",
+                Some(b"sbat,1,2021030218\n"),
+            )?);
+            log
+        };
 
         debug_print_log("RTMR0", &rtmr0_log);
         Ok((measure_log(&rtmr0_log), rtmr0_log))

@@ -17,6 +17,7 @@ mod kernel;
 mod image;
 mod machine;
 mod num;
+mod smbios;
 mod tdvf;
 mod util;
 
@@ -93,6 +94,13 @@ pub struct QemuShape {
     /// the DSDT, so a reference launch with a serial must declare one here.
     #[serde(default)]
     pub serial: Vec<String>,
+    /// Optional SMBIOS Type-4 Processor ID (8 bytes, hex) to patch into the dumped
+    /// SMBIOS before measuring RTMR0 #14. This is CPUID leaf-1 (EAX|EDX) of the
+    /// PRODUCTION CPU; under KVM the generating host's CPUID leaks in and cannot be
+    /// overridden, so measurement generation pins it from the profile instead. When
+    /// absent, whatever the generating QEMU produced is used unchanged.
+    #[serde(default)]
+    pub processor_id: Option<String>,
 }
 
 fn default_cpu() -> String { "host".to_string() }
