@@ -286,35 +286,49 @@ impl<'a> Tdvf<'a> {
         let separator = measure_sha384(&[0x00, 0x00, 0x00, 0x00]);
 
         let rtmr0_log = if machine.direct_boot {
-            // Direct boot: the guest's complete 15-event RTMR0 fold, fully offline.
-            // Between the CFV and the secure-boot variables OVMF measures three QEMU
-            // fw_cfg items (#2 etc/extra-pci-roots, #3 BootMenu = fixed 0x0000,
-            // #4 bootorder); after the ACPI events it measures the SMBIOS handoff
-            // (#14 = SHA-384 of the EDK2-filtered SMBIOS table). No BootOrder/Boot0000
-            // — those are not folded into RTMR0 under direct boot.
+            // Direct boot: the guest's complete RTMR0 fold, fully offline. Between the CFV
+            // and the secure-boot variables OVMF measures up to three QEMU fw_cfg items
+            // (etc/extra-pci-roots -- only when non-zero, see below; BootMenu = fixed
+            // 0x0000; bootorder); after the ACPI events it measures the SMBIOS handoff
+            // (SHA-384 of the EDK2-filtered SMBIOS table). No BootOrder/Boot0000 — those
+            // are not folded into RTMR0 under direct boot. 15 events with extra PCI roots
+            // present, 14 without.
             if tables.smbios.is_empty() {
                 bail!(
                     "direct-boot RTMR0 requires the dumped SMBIOS table; run with \
                      create_acpi_table so the patched QEMU emits smbios-tables"
                 );
             }
-            vec![
+            // etc/extra-pci-roots is measured only when there ARE extra PCI roots. QEMU
+            // writes the fw_cfg item unconditionally (8-byte LE count), but OVMF reads it
+            // solely to enumerate the extra root buses, so with a zero count it never
+            // touches the item and nothing lands in RTMR0. Measuring it regardless added a
+            // phantom event to every topology without pxb-pcie bridges -- i.e. every guest
+            // on a host whose NUMA node count is not 2, which takes the flat path. Verified
+            // against live CCELs from one host: the guest-NUMA boot logs 15 RTMR0 events,
+            // the flat boot 14, and the missing one is exactly this.
+            let mut log = vec![
                 td_hob_hash,                                 // #0
                 cfv_hash,                                    // #1
-                measure_sha384(&tables.extra_pci_roots),     // #2 etc/extra-pci-roots
-                measure_sha384(&[0x00, 0x00]),               // #3 BootMenu (disabled)
-                measure_sha384(&tables.bootorder),           // #4 bootorder
-                sb,                                          // #5
-                pk,                                          // #6
-                kek,                                         // #7
-                db,                                          // #8
-                dbx,                                         // #9
-                separator,                                   // #10
-                acpi_loader_hash,                            // #11 etc/table-loader
-                acpi_rsdp_hash,                              // #12 etc/acpi/rsdp
-                acpi_tables_hash,                            // #13 etc/acpi/tables
-                crate::smbios::measure_smbios(&tables.smbios), // #14 SMBIOS handoff
-            ]
+            ];
+            if tables.extra_pci_roots.iter().any(|&b| b != 0) {
+                log.push(measure_sha384(&tables.extra_pci_roots)); // etc/extra-pci-roots
+            }
+            log.extend([
+                measure_sha384(&[0x00, 0x00]),               // BootMenu (disabled)
+                measure_sha384(&tables.bootorder),           // bootorder
+                sb,
+                pk,
+                kek,
+                db,
+                dbx,
+                separator,
+                acpi_loader_hash,                            // etc/table-loader
+                acpi_rsdp_hash,                              // etc/acpi/rsdp
+                acpi_tables_hash,                            // etc/acpi/tables
+                crate::smbios::measure_smbios(&tables.smbios), // SMBIOS handoff
+            ]);
+            log
         } else {
             // Indirect boot (grub/shim): unchanged legacy fold — BootOrder + the
             // per-entry boot variables + SbatLevel, no fw_cfg/SMBIOS events.
