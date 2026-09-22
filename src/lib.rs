@@ -47,7 +47,7 @@ pub struct TdxMeasurements {
 /// Common boot configuration (platform-specific)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BootConfig {
-    pub cpus: u8,
+    pub cpus: u32,
     pub memory: String,
     pub bios: String,
     pub acpi_tables: String,
@@ -172,7 +172,7 @@ impl ImageConfig {
     }
 
     /// Get CPU count from boot config
-    pub fn cpu_count(&self) -> Result<u8> {
+    pub fn cpu_count(&self) -> Result<u32> {
         let boot_config = self.boot_config.as_ref()
             .ok_or_else(|| anyhow!("Boot config is required"))?;
 

@@ -59,7 +59,7 @@ struct PathResolver {
 }
 
 struct PathStorage {
-    cpu_count: u8,
+    cpu_count: u32,
     memory_size: u64,
     firmware: String,
     cmdline: String,
