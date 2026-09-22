@@ -393,7 +393,7 @@ fn qemu_pkg_for<'a>(distribution: &str, version_override: Option<&'a str>) -> Re
 /// nothing else is added implicitly. When `qemu` is `None`, the script falls
 /// back to the Canonical direct-boot defaults so Intel's reference scenario
 /// keeps working unchanged.
-fn build_qemu_args(qemu: Option<&QemuShape>, cpus: u8, memory: &str) -> Vec<OsString> {
+fn build_qemu_args(qemu: Option<&QemuShape>, cpus: u32, memory: &str) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
     let push = |args: &mut Vec<OsString>, k: &str, v: &str| {
         args.push(k.into());

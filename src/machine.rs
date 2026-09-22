@@ -13,7 +13,7 @@ use std::path::Path;
 
 #[derive(Debug, bon::Builder)]
 pub struct Machine<'a> {
-    pub cpu_count: u8,
+    pub cpu_count: u32,
     pub memory_size: u64,
     pub qcow2: Option<&'a str>,
     pub firmware: &'a str,
